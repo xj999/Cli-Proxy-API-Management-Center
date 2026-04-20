@@ -57,6 +57,9 @@ export interface UsageDetail {
   timestamp: string;
   source: string;
   auth_index: number;
+  client_api_key_id?: string;
+  client_api_key_masked?: string;
+  session_index?: string;
   latency_ms?: number;
   tokens: {
     input_tokens: number;
@@ -91,6 +94,11 @@ export interface ApiStats {
   >;
 }
 
+export interface ClientApiKeyDisplayResolver {
+  get: (key: string) => string | undefined;
+  size?: number;
+}
+
 export interface ModelStatsSummary {
   model: string;
   requests: number;
@@ -103,19 +111,59 @@ export interface ModelStatsSummary {
   latencySampleCount: number;
 }
 
-export type UsageTimeRange = '7h' | '24h' | '7d' | 'all';
+export type UsageTimeRange = 'today' | '7h' | '24h' | '7d' | 'all';
 
 const TOKENS_PER_PRICE_UNIT = 1_000_000;
 const MODEL_PRICE_STORAGE_KEY = 'cli-proxy-model-prices-v2';
 const USAGE_ENDPOINT_METHOD_REGEX = /^(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+(\S+)/i;
-const USAGE_TIME_RANGE_MS: Record<Exclude<UsageTimeRange, 'all'>, number> = {
+const USAGE_TIME_RANGE_MS: Record<Exclude<UsageTimeRange, 'all' | 'today'>, number> = {
   '7h': 7 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
 };
 
+const resolveCompactNumberLocale = (locale?: string): string => {
+  const trimmed = locale?.trim();
+  if (trimmed) return trimmed;
+  const documentLang =
+    typeof document !== 'undefined' ? document.documentElement?.lang?.trim() || '' : '';
+  if (documentLang) return documentLang;
+  const navigatorLang = typeof navigator !== 'undefined' ? navigator.language?.trim() || '' : '';
+  return navigatorLang;
+};
+
+const isChineseLocale = (locale?: string): boolean => /^zh(?:[-_]|$)/i.test(locale || '');
+
+const formatChineseCompactNumber = (value: number): string => {
+  const abs = Math.abs(value);
+  if (abs >= 100_000_000) {
+    const yiValue = value / 100_000_000;
+    return `${Number.isInteger(yiValue) ? yiValue.toFixed(0) : yiValue.toFixed(1)}亿`;
+  }
+  if (abs >= 10_000) {
+    const wanValue = value / 10_000;
+    if (Math.abs(wanValue) >= 100) {
+      return `${wanValue.toFixed(0)}万`;
+    }
+    return `${wanValue.toFixed(1)}万`;
+  }
+  return abs >= 1 ? value.toFixed(0) : value.toFixed(2);
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const getStringField = (
+  record: Record<string, unknown>,
+  ...keys: string[]
+): string | undefined => {
+  for (const key of keys) {
+    if (typeof record[key] === 'string') {
+      return record[key] as string;
+    }
+  }
+  return undefined;
+};
 
 const getApisRecord = (usageData: unknown): Record<string, unknown> | null => {
   const usageRecord = isRecord(usageData) ? usageData : null;
@@ -159,12 +207,14 @@ export function filterUsageByTimeRange<T>(
     return usageData;
   }
 
-  const rangeMs = USAGE_TIME_RANGE_MS[range];
-  if (!Number.isFinite(rangeMs) || rangeMs <= 0) {
-    return usageData;
-  }
-
-  const windowStart = nowMs - rangeMs;
+  const windowStart =
+    range === 'today'
+      ? (() => {
+          const start = new Date(nowMs);
+          start.setHours(0, 0, 0, 0);
+          return start.getTime();
+        })()
+      : nowMs - USAGE_TIME_RANGE_MS[range];
   const filteredApis: Record<string, unknown> = {};
   const totalSummary = createUsageSummary();
 
@@ -290,6 +340,12 @@ const fnv1a64Hex = (value: string): string => {
   return hex;
 };
 
+export function buildClientApiKeyId(apiKey: string): string {
+  const trimmed = apiKey.trim();
+  if (!trimmed) return '';
+  return `${USAGE_SOURCE_PREFIX_KEY}${fnv1a64Hex(trimmed)}`;
+}
+
 const looksLikeRawSecret = (text: string): boolean => {
   if (!text || /\s/.test(text)) return false;
 
@@ -381,7 +437,7 @@ export function buildCandidateUsageSourceIds(input: {
     // keys containing '/' etc.) that are classified as text by normalizeUsageSourceId()
     // can still match usage details.
     result.push(normalizeUsageSourceId(apiKey));
-    result.push(`${USAGE_SOURCE_PREFIX_KEY}${fnv1a64Hex(apiKey)}`);
+    result.push(buildClientApiKeyId(apiKey));
     result.push(`${USAGE_SOURCE_PREFIX_MASKED}${maskApiKey(apiKey)}`);
   }
 
@@ -467,12 +523,21 @@ export function formatPerMinuteValue(value: number): string {
 /**
  * 格式化紧凑数字
  */
-export function formatCompactNumber(value: number): string {
+export function formatCompactNumber(value: number, locale?: string): string {
   const num = Number(value);
   if (!Number.isFinite(num)) {
     return '0';
   }
   const abs = Math.abs(num);
+  const resolvedLocale = resolveCompactNumberLocale(locale);
+
+  if (isChineseLocale(resolvedLocale)) {
+    return formatChineseCompactNumber(num);
+  }
+
+  if (abs >= 1_000_000_000) {
+    return `${(num / 1_000_000_000).toFixed(1)}B`;
+  }
   if (abs >= 1_000_000) {
     return `${(num / 1_000_000).toFixed(1)}M`;
   }
@@ -553,6 +618,14 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
           timestamp,
           source: normalizeSource(detailRaw.source),
           auth_index: detailRaw.auth_index as unknown as number,
+          client_api_key_id: getStringField(detailRaw, 'client_api_key_id', 'clientApiKeyId'),
+          client_api_key_masked: getStringField(
+            detailRaw,
+            'client_api_key_masked',
+            'clientApiKeyMasked'
+          ),
+          session_index:
+            typeof detailRaw.session_index === 'string' ? detailRaw.session_index : undefined,
           latency_ms: latencyMs ?? undefined,
           tokens: tokensRaw as unknown as UsageDetail['tokens'],
           failed: detailRaw.failed === true,
@@ -626,6 +699,14 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
           timestamp,
           source: normalizeSource(detailRaw.source),
           auth_index: detailRaw.auth_index as unknown as number,
+          client_api_key_id: getStringField(detailRaw, 'client_api_key_id', 'clientApiKeyId'),
+          client_api_key_masked: getStringField(
+            detailRaw,
+            'client_api_key_masked',
+            'clientApiKeyMasked'
+          ),
+          session_index:
+            typeof detailRaw.session_index === 'string' ? detailRaw.session_index : undefined,
           latency_ms: latencyMs ?? undefined,
           tokens: tokensRaw as unknown as UsageDetail['tokens'],
           failed: detailRaw.failed === true,
@@ -883,7 +964,8 @@ export function saveModelPrices(prices: Record<string, ModelPrice>): void {
  */
 export function getApiStats(
   usageData: unknown,
-  modelPrices: Record<string, ModelPrice>
+  modelPrices: Record<string, ModelPrice>,
+  clientApiKeyDisplayMap?: ClientApiKeyDisplayResolver
 ): ApiStats[] {
   const apis = getApisRecord(usageData);
   if (!apis) return [];
@@ -898,6 +980,25 @@ export function getApiStats(
     let derivedSuccessCount = 0;
     let derivedFailureCount = 0;
     let totalCost = 0;
+    let clientApiKeyDisplay = '';
+    const resolveApiDetailsDisplay = (detailRecord: Record<string, unknown> | null) => {
+      if (!detailRecord || clientApiKeyDisplayMap?.size === 0) return '';
+
+      const clientApiKeyId = getStringField(detailRecord, 'client_api_key_id', 'clientApiKeyId');
+      const clientApiKeyMasked = getStringField(
+        detailRecord,
+        'client_api_key_masked',
+        'clientApiKeyMasked'
+      );
+
+      return (
+        (clientApiKeyId ? clientApiKeyDisplayMap?.get(clientApiKeyId) : undefined) ||
+        (clientApiKeyMasked ? clientApiKeyDisplayMap?.get(clientApiKeyMasked) : undefined) ||
+        clientApiKeyDisplayMap?.get(buildClientApiKeyId(endpoint)) ||
+        clientApiKeyDisplayMap?.get(endpoint) ||
+        ''
+      );
+    };
 
     const modelsData = isRecord(apiData.models) ? apiData.models : {};
     Object.entries(modelsData).forEach(([modelName, modelData]) => {
@@ -931,6 +1032,10 @@ export function getApiStats(
               modelPrices
             );
           }
+
+          if (!clientApiKeyDisplay) {
+            clientApiKeyDisplay = resolveApiDetailsDisplay(detailRecord);
+          }
         });
       }
 
@@ -954,7 +1059,11 @@ export function getApiStats(
       : derivedFailureCount;
 
     result.push({
-      endpoint: maskUsageSensitiveValue(endpoint) || endpoint,
+      endpoint:
+        clientApiKeyDisplay ||
+        (clientApiKeyDisplayMap?.size !== 0 ? clientApiKeyDisplayMap?.get(endpoint) : undefined) ||
+        maskUsageSensitiveValue(endpoint) ||
+        endpoint,
       totalRequests: Number(apiData.total_requests) || 0,
       successCount,
       failureCount,

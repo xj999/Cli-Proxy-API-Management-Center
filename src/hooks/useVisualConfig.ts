@@ -64,6 +64,28 @@ function resolveApiKeysText(parsed: Record<string, unknown>): string {
   return parseApiKeysText(configApiKeyProvider['api-keys']);
 }
 
+function parseApiKeyAliasesText(raw: unknown): string {
+  if (!Array.isArray(raw)) return '';
+
+  const entries: string[] = [];
+  for (const item of raw) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const apiKey = extractApiKeyValue(item);
+    const alias = typeof record.alias === 'string' ? record.alias.trim() : '';
+    if (!apiKey || !alias) continue;
+    entries.push(`${apiKey}\t${alias}`);
+  }
+  return entries.join('\n');
+}
+
+function resolveApiKeyAliasesText(parsed: Record<string, unknown>): string {
+  if (!Object.prototype.hasOwnProperty.call(parsed, 'api-key-aliases')) {
+    return '';
+  }
+  return parseApiKeyAliasesText(parsed['api-key-aliases']);
+}
+
 type YamlDocument = ReturnType<typeof parseDocument>;
 type YamlPath = string[];
 
@@ -587,6 +609,12 @@ function getNextDirtyFields(
   if (Object.prototype.hasOwnProperty.call(patch, 'apiKeysText')) {
     updateDirty('apiKeysText', nextValues.apiKeysText === baselineValues.apiKeysText);
   }
+  if (Object.prototype.hasOwnProperty.call(patch, 'apiKeyAliasesText')) {
+    updateDirty(
+      'apiKeyAliasesText',
+      nextValues.apiKeyAliasesText === baselineValues.apiKeyAliasesText
+    );
+  }
   if (Object.prototype.hasOwnProperty.call(patch, 'debug')) {
     updateDirty('debug', nextValues.debug === baselineValues.debug);
   }
@@ -817,6 +845,7 @@ export function useVisualConfig() {
 
         authDir: typeof parsed['auth-dir'] === 'string' ? parsed['auth-dir'] : '',
         apiKeysText: resolveApiKeysText(parsed),
+        apiKeyAliasesText: resolveApiKeyAliasesText(parsed),
 
         debug: Boolean(parsed.debug),
         commercialMode: Boolean(parsed['commercial-mode']),
@@ -916,6 +945,19 @@ export function useVisualConfig() {
           doc.setIn(['api-keys'], apiKeys);
         } else if (docHas(doc, ['api-keys'])) {
           doc.deleteIn(['api-keys']);
+        }
+        const apiKeyAliases = values.apiKeyAliasesText
+          .split('\n')
+          .map((line) => line.split('\t'))
+          .map(([apiKey, alias]) => ({
+            'api-key': apiKey?.trim() || '',
+            alias: alias?.trim() || '',
+          }))
+          .filter((entry) => entry['api-key'] && entry.alias);
+        if (apiKeyAliases.length > 0) {
+          doc.setIn(['api-key-aliases'], apiKeyAliases);
+        } else if (docHas(doc, ['api-key-aliases'])) {
+          doc.deleteIn(['api-key-aliases']);
         }
         deleteLegacyApiKeysProvider(doc);
 

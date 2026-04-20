@@ -40,6 +40,7 @@ import {
   filterUsageByTimeRange,
   type UsageTimeRange
 } from '@/utils/usage';
+import { buildClientApiKeyDisplayMap } from '@/utils/sourceResolver';
 import styles from './UsagePage.module.scss';
 
 // Register Chart.js components
@@ -59,20 +60,21 @@ const TIME_RANGE_STORAGE_KEY = 'cli-proxy-usage-time-range-v1';
 const DEFAULT_CHART_LINES = ['all'];
 const DEFAULT_TIME_RANGE: UsageTimeRange = '24h';
 const MAX_CHART_LINES = 9;
-const TIME_RANGE_OPTIONS: ReadonlyArray<{ value: UsageTimeRange; labelKey: string }> = [
+export const TIME_RANGE_OPTIONS: ReadonlyArray<{ value: UsageTimeRange; labelKey: string }> = [
   { value: 'all', labelKey: 'usage_stats.range_all' },
+  { value: 'today', labelKey: 'usage_stats.range_today' },
   { value: '7h', labelKey: 'usage_stats.range_7h' },
   { value: '24h', labelKey: 'usage_stats.range_24h' },
   { value: '7d', labelKey: 'usage_stats.range_7d' },
 ];
-const HOUR_WINDOW_BY_TIME_RANGE: Record<Exclude<UsageTimeRange, 'all'>, number> = {
+const HOUR_WINDOW_BY_TIME_RANGE: Record<Exclude<UsageTimeRange, 'all' | 'today'>, number> = {
   '7h': 7,
   '24h': 24,
   '7d': 7 * 24
 };
 
-const isUsageTimeRange = (value: unknown): value is UsageTimeRange =>
-  value === '7h' || value === '24h' || value === '7d' || value === 'all';
+export const isUsageTimeRange = (value: unknown): value is UsageTimeRange =>
+  value === 'today' || value === '7h' || value === '24h' || value === '7d' || value === 'all';
 
 const normalizeChartLines = (value: unknown, maxLines = MAX_CHART_LINES): string[] => {
   if (!Array.isArray(value)) {
@@ -144,6 +146,7 @@ export function UsagePage() {
   // Chart lines state
   const [chartLines, setChartLines] = useState<string[]>(loadChartLines);
   const [timeRange, setTimeRange] = useState<UsageTimeRange>(loadTimeRange);
+  const [timeRangeInitialized, setTimeRangeInitialized] = useState(false);
 
   const timeRangeOptions = useMemo(
     () =>
@@ -158,8 +161,20 @@ export function UsagePage() {
     () => (usage ? filterUsageByTimeRange(usage, timeRange) : null),
     [usage, timeRange]
   );
+  const clientApiKeyDisplayMap = useMemo(
+    () =>
+      buildClientApiKeyDisplayMap({
+        apiKeys: config?.apiKeys || [],
+        apiKeyAliases: config?.apiKeyAliases || [],
+      }),
+    [config?.apiKeyAliases, config?.apiKeys]
+  );
   const hourWindowHours =
-    timeRange === 'all' ? undefined : HOUR_WINDOW_BY_TIME_RANGE[timeRange];
+    timeRange === 'all'
+      ? undefined
+      : timeRange === 'today'
+        ? new Date().getHours() + 1
+        : HOUR_WINDOW_BY_TIME_RANGE[timeRange];
 
   const handleChartLinesChange = useCallback((lines: string[]) => {
     setChartLines(normalizeChartLines(lines));
@@ -187,6 +202,14 @@ export function UsagePage() {
     }
   }, [timeRange]);
 
+  useEffect(() => {
+    if (!timeRangeInitialized) {
+      setTimeRangeInitialized(true);
+      return;
+    }
+    void loadUsage().catch(() => {});
+  }, [loadUsage, timeRange, timeRangeInitialized]);
+
   const nowMs = lastRefreshedAt?.getTime() ?? 0;
 
   // Sparklines hook
@@ -213,8 +236,8 @@ export function UsagePage() {
   // Derived data
   const modelNames = useMemo(() => getModelNamesFromUsage(usage), [usage]);
   const apiStats = useMemo(
-    () => getApiStats(filteredUsage, modelPrices),
-    [filteredUsage, modelPrices]
+    () => getApiStats(filteredUsage, modelPrices, clientApiKeyDisplayMap),
+    [clientApiKeyDisplayMap, filteredUsage, modelPrices]
   );
   const modelStats = useMemo(
     () => getModelStats(filteredUsage, modelPrices),
@@ -369,6 +392,8 @@ export function UsagePage() {
         usage={filteredUsage}
         loading={loading}
         geminiKeys={config?.geminiApiKeys || []}
+        apiKeys={config?.apiKeys || []}
+        apiKeyAliases={config?.apiKeyAliases || []}
         claudeConfigs={config?.claudeApiKeys || []}
         codexConfigs={config?.codexApiKeys || []}
         vertexConfigs={config?.vertexApiKeys || []}

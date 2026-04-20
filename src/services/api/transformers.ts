@@ -9,7 +9,7 @@ import type {
   AmpcodeModelMapping,
   AmpcodeUpstreamApiKeyMapping
 } from '@/types';
-import type { Config } from '@/types/config';
+import type { ApiKeyAliasConfig, Config } from '@/types/config';
 import { buildHeaderObject } from '@/utils/headers';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -92,6 +92,21 @@ const normalizePrefix = (value: unknown): string | undefined => {
   if (value === undefined || value === null) return undefined;
   const trimmed = String(value).trim();
   return trimmed ? trimmed : undefined;
+};
+
+const normalizeApiKeyAliases = (input: unknown): ApiKeyAliasConfig[] => {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => {
+      if (!isRecord(item)) return null;
+      const apiKey = item['api-key'] ?? item.apiKey;
+      const alias = item.alias ?? item['alias'];
+      const trimmedApiKey = String(apiKey ?? '').trim();
+      const trimmedAlias = String(alias ?? '').trim();
+      if (!trimmedApiKey || !trimmedAlias) return null;
+      return { apiKey: trimmedApiKey, alias: trimmedAlias } satisfies ApiKeyAliasConfig;
+    })
+    .filter(Boolean) as ApiKeyAliasConfig[];
 };
 
 const normalizeApiKeyEntry = (entry: unknown): ApiKeyEntry | null => {
@@ -401,6 +416,10 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
   const apiKeysRaw = raw['api-keys'] ?? raw.apiKeys;
   if (Array.isArray(apiKeysRaw)) {
     config.apiKeys = apiKeysRaw.map((key) => String(key)).filter((key) => key.trim() !== '');
+  }
+  const apiKeyAliases = normalizeApiKeyAliases(raw['api-key-aliases'] ?? raw.apiKeyAliases);
+  if (apiKeyAliases.length) {
+    config.apiKeyAliases = apiKeyAliases;
   }
 
   const geminiList = raw['gemini-api-key'] ?? raw.geminiApiKey ?? raw.geminiApiKeys;

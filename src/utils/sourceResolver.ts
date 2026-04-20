@@ -1,6 +1,13 @@
 import type { GeminiKeyConfig, OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
+import type { ApiKeyAliasConfig } from '@/types/config';
 import type { CredentialInfo, SourceInfo } from '@/types/sourceInfo';
-import { buildCandidateUsageSourceIds, normalizeAuthIndex } from '@/utils/usage';
+import {
+  buildCandidateUsageSourceIds,
+  buildClientApiKeyId,
+  collectUsageDetails,
+  normalizeAuthIndex,
+} from '@/utils/usage';
+import { maskApiKey } from './format';
 
 export interface SourceInfoMapInput {
   geminiApiKeys?: GeminiKeyConfig[];
@@ -8,6 +15,11 @@ export interface SourceInfoMapInput {
   codexApiKeys?: ProviderKeyConfig[];
   vertexApiKeys?: ProviderKeyConfig[];
   openaiCompatibility?: OpenAIProviderConfig[];
+}
+
+export interface ClientApiKeyDisplayMapInput {
+  apiKeys?: string[];
+  apiKeyAliases?: ApiKeyAliasConfig[];
 }
 
 export function buildSourceInfoMap(input: SourceInfoMapInput): Map<string, SourceInfo> {
@@ -56,6 +68,71 @@ export function buildSourceInfoMap(input: SourceInfoMapInput): Map<string, Sourc
   });
 
   return map;
+}
+
+export function buildClientApiKeyDisplayMap(
+  input: ClientApiKeyDisplayMapInput
+): Map<string, string> {
+  const map = new Map<string, string>();
+  const registerDisplay = (lookupKey: string, display: string) => {
+    const trimmedLookupKey = lookupKey.trim();
+    const trimmedDisplay = display.trim();
+    if (!trimmedLookupKey || !trimmedDisplay || map.has(trimmedLookupKey)) return;
+    map.set(trimmedLookupKey, trimmedDisplay);
+  };
+
+  (input.apiKeyAliases || []).forEach((entry) => {
+    const rawKey = entry.apiKey.trim();
+    const maskedKey = maskApiKey(entry.apiKey);
+    const keyId = buildClientApiKeyId(entry.apiKey);
+    const alias = entry.alias?.trim();
+    if (!alias) return;
+    registerDisplay(rawKey, alias);
+    registerDisplay(keyId, alias);
+    registerDisplay(maskedKey, alias);
+  });
+
+  (input.apiKeys || []).forEach((apiKey) => {
+    const rawKey = apiKey.trim();
+    const keyId = buildClientApiKeyId(apiKey);
+    const maskedKey = maskApiKey(apiKey);
+    registerDisplay(rawKey, maskedKey);
+    registerDisplay(keyId, maskedKey);
+    registerDisplay(maskedKey, maskedKey);
+  });
+
+  return map;
+}
+
+export function resolveClientApiKeyDisplay(
+  clientApiKeyId: string,
+  clientApiKeyMasked: string,
+  displayMap: Map<string, string>
+): string {
+  const keyId = clientApiKeyId.trim();
+  if (keyId) {
+    const matched = displayMap.get(keyId);
+    if (matched) return matched;
+  }
+
+  const masked = clientApiKeyMasked.trim();
+  if (masked) return masked;
+  return '-';
+}
+
+export function findMissingClientApiKeyIds(
+  usage: unknown,
+  displayMap: Map<string, string>
+): string[] {
+  const missing = new Set<string>();
+
+  collectUsageDetails(usage).forEach((detail) => {
+    const keyId = String(detail.client_api_key_id ?? '').trim();
+    if (!keyId || displayMap.has(keyId)) return;
+    missing.add(keyId);
+  });
+
+  return Array.from(missing).sort();
 }
 
 export function resolveSourceDisplay(

@@ -160,12 +160,16 @@ function buildProtocolOptions(
 
 export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
   value,
+  aliasValue,
   disabled,
   onChange,
+  onAliasChange,
 }: {
   value: string;
+  aliasValue: string;
   disabled?: boolean;
   onChange: (nextValue: string) => void;
+  onAliasChange: (nextValue: string) => void;
 }) {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
@@ -177,6 +181,19 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
         .filter(Boolean),
     [value]
   );
+  const aliasEntries = useMemo(() => {
+    const map = new Map<string, string>();
+    aliasValue
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .forEach(([apiKey, alias]) => {
+        const trimmedApiKey = apiKey?.trim() || '';
+        const trimmedAlias = alias?.trim() || '';
+        if (!trimmedApiKey || !trimmedAlias || map.has(trimmedApiKey)) return;
+        map.set(trimmedApiKey, trimmedAlias);
+      });
+    return map;
+  }, [aliasValue]);
   const [apiKeyIds, setApiKeyIds] = useState(() => apiKeys.map(() => makeClientId()));
   const renderApiKeyIds = useMemo(() => {
     if (apiKeyIds.length === apiKeys.length) return apiKeyIds;
@@ -193,6 +210,7 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
   const [modalOpen, setModalOpen] = useState(false);
   const [editingApiKeyId, setEditingApiKeyId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState('');
+  const [aliasInputValue, setAliasInputValue] = useState('');
   const [formError, setFormError] = useState('');
 
   function generateSecureApiKey(): string {
@@ -205,6 +223,7 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
   const openAddModal = () => {
     setEditingApiKeyId(null);
     setInputValue('');
+    setAliasInputValue('');
     setFormError('');
     setModalOpen(true);
   };
@@ -213,6 +232,7 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
     const editingIndex = renderApiKeyIds.findIndex((id) => id === apiKeyId);
     setEditingApiKeyId(apiKeyId);
     setInputValue(apiKeys[editingIndex] ?? '');
+    setAliasInputValue(aliasEntries.get(apiKeys[editingIndex] ?? '') ?? '');
     setFormError('');
     setModalOpen(true);
   };
@@ -220,19 +240,34 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
   const closeModal = () => {
     setModalOpen(false);
     setInputValue('');
+    setAliasInputValue('');
     setEditingApiKeyId(null);
     setFormError('');
   };
 
-  const updateApiKeys = (nextKeys: string[]) => {
+  const serializeAliasEntries = (nextKeys: string[], nextAliases: Map<string, string>) => {
+    const lines = nextKeys
+      .map((key) => {
+        const alias = nextAliases.get(key)?.trim() || '';
+        return alias ? `${key}\t${alias}` : '';
+      })
+      .filter(Boolean);
+    onAliasChange(lines.join('\n'));
+  };
+
+  const updateApiKeys = (nextKeys: string[], nextAliases: Map<string, string>) => {
     onChange(nextKeys.join('\n'));
+    serializeAliasEntries(nextKeys, nextAliases);
   };
 
   const handleDelete = (apiKeyId: string) => {
     const index = renderApiKeyIds.findIndex((id) => id === apiKeyId);
     if (index < 0) return;
     setApiKeyIds(renderApiKeyIds.filter((id) => id !== apiKeyId));
-    updateApiKeys(apiKeys.filter((_, i) => i !== index));
+    const nextKeys = apiKeys.filter((_, i) => i !== index);
+    const nextAliases = new Map(aliasEntries);
+    nextAliases.delete(apiKeys[index] ?? '');
+    updateApiKeys(nextKeys, nextAliases);
   };
 
   const handleSave = () => {
@@ -249,14 +284,27 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
     const editingIndex = editingApiKeyId
       ? renderApiKeyIds.findIndex((id) => id === editingApiKeyId)
       : -1;
+    const alias = aliasInputValue.trim();
+    const nextAliases = new Map(aliasEntries);
     const nextKeys =
       editingApiKeyId === null
         ? [...apiKeys, trimmed]
         : apiKeys.map((key, idx) => (idx === editingIndex ? trimmed : key));
+    if (editingApiKeyId !== null) {
+      const previousKey = apiKeys[editingIndex] ?? '';
+      if (previousKey && previousKey !== trimmed) {
+        nextAliases.delete(previousKey);
+      }
+    }
+    if (alias) {
+      nextAliases.set(trimmed, alias);
+    } else {
+      nextAliases.delete(trimmed);
+    }
     if (editingApiKeyId === null) {
       setApiKeyIds([...renderApiKeyIds, makeClientId()]);
     }
-    updateApiKeys(nextKeys);
+    updateApiKeys(nextKeys, nextAliases);
     closeModal();
   };
 
@@ -291,7 +339,7 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
               <div className="item-meta">
                 <div className="pill">#{index + 1}</div>
                 <div className="item-title">
-                  {t('config_management.visual.api_keys.input_label')}
+                  {aliasEntries.get(key) || t('config_management.visual.api_keys.input_label')}
                 </div>
                 <div className="item-subtitle">{maskApiKey(String(key || ''))}</div>
               </div>
@@ -382,6 +430,20 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
               {formError}
             </div>
           )}
+        </div>
+        <div className="form-group">
+          <label htmlFor={`${apiKeyInputId}-alias`}>
+            {t('config_management.visual.api_keys.alias_label')}
+          </label>
+          <input
+            id={`${apiKeyInputId}-alias`}
+            className="input"
+            placeholder={t('config_management.visual.api_keys.alias_placeholder')}
+            value={aliasInputValue}
+            onChange={(e) => setAliasInputValue(e.target.value)}
+            disabled={disabled}
+          />
+          <div className="hint">{t('config_management.visual.api_keys.alias_hint')}</div>
         </div>
       </Modal>
     </div>

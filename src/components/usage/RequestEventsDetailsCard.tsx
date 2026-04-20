@@ -1,14 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Select } from '@/components/ui/Select';
 import { authFilesApi } from '@/services/api/authFiles';
+import { useConfigStore } from '@/stores';
 import type { GeminiKeyConfig, ProviderKeyConfig, OpenAIProviderConfig } from '@/types';
 import type { AuthFileItem } from '@/types/authFile';
+import type { ApiKeyAliasConfig } from '@/types/config';
 import type { CredentialInfo } from '@/types/sourceInfo';
-import { buildSourceInfoMap, resolveSourceDisplay } from '@/utils/sourceResolver';
+import {
+  buildClientApiKeyDisplayMap,
+  buildSourceInfoMap,
+  findMissingClientApiKeyIds,
+  resolveClientApiKeyDisplay,
+  resolveSourceDisplay,
+} from '@/utils/sourceResolver';
 import { parseTimestampMs } from '@/utils/timestamp';
 import {
   collectUsageDetails,
@@ -41,12 +49,16 @@ type RequestEventRow = {
   reasoningTokens: number;
   cachedTokens: number;
   totalTokens: number;
+  clientApiKey: string;
+  sessionIndex: string;
 };
 
 export interface RequestEventsDetailsCardProps {
   usage: unknown;
   loading: boolean;
   geminiKeys: GeminiKeyConfig[];
+  apiKeys: string[];
+  apiKeyAliases: ApiKeyAliasConfig[];
   claudeConfigs: ProviderKeyConfig[];
   codexConfigs: ProviderKeyConfig[];
   vertexConfigs: ProviderKeyConfig[];
@@ -70,6 +82,8 @@ export function RequestEventsDetailsCard({
   usage,
   loading,
   geminiKeys,
+  apiKeys,
+  apiKeyAliases,
   claudeConfigs,
   codexConfigs,
   vertexConfigs,
@@ -85,6 +99,8 @@ export function RequestEventsDetailsCard({
   const [sourceFilter, setSourceFilter] = useState(ALL_FILTER);
   const [authIndexFilter, setAuthIndexFilter] = useState(ALL_FILTER);
   const [authFileMap, setAuthFileMap] = useState<Map<string, CredentialInfo>>(new Map());
+  const fetchConfig = useConfigStore((state) => state.fetchConfig);
+  const attemptedAliasRefreshRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
@@ -122,6 +138,35 @@ export function RequestEventsDetailsCard({
       }),
     [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, vertexConfigs]
   );
+
+  const clientApiKeyDisplayMap = useMemo(
+    () =>
+      buildClientApiKeyDisplayMap({
+        apiKeys,
+        apiKeyAliases,
+      }),
+    [apiKeyAliases, apiKeys]
+  );
+
+  const missingClientApiKeyIds = useMemo(
+    () => findMissingClientApiKeyIds(usage, clientApiKeyDisplayMap),
+    [clientApiKeyDisplayMap, usage]
+  );
+
+  useEffect(() => {
+    const signature = missingClientApiKeyIds.join('|');
+    if (!signature) {
+      attemptedAliasRefreshRef.current = '';
+      return;
+    }
+    if (attemptedAliasRefreshRef.current === signature) {
+      return;
+    }
+
+    // usage can arrive before the local config cache sees newly-added client key aliases.
+    attemptedAliasRefreshRef.current = signature;
+    fetchConfig(undefined, true).catch(() => {});
+  }, [fetchConfig, missingClientApiKeyIds]);
 
   const rows = useMemo<RequestEventRow[]>(() => {
     const details = collectUsageDetails(usage);
@@ -161,6 +206,12 @@ export function RequestEventsDetailsCard({
           extractTotalTokens(detail)
         );
         const latencyMs = extractLatencyMs(detail);
+        const clientApiKey = resolveClientApiKeyDisplay(
+          String(detail.client_api_key_id ?? ''),
+          String(detail.client_api_key_masked ?? ''),
+          clientApiKeyDisplayMap
+        );
+        const sessionIndex = String(detail.session_index ?? '').trim() || '-';
 
         return {
           id: `${timestamp}-${model}-${sourceRaw || source}-${authIndex}-${index}`,
@@ -179,12 +230,15 @@ export function RequestEventsDetailsCard({
           reasoningTokens,
           cachedTokens,
           totalTokens,
+          clientApiKey,
+          sessionIndex,
         };
       })
       .sort((a, b) => b.timestampMs - a.timestampMs);
-  }, [authFileMap, i18n.language, sourceInfoMap, usage]);
+  }, [authFileMap, clientApiKeyDisplayMap, i18n.language, sourceInfoMap, usage]);
 
   const hasLatencyData = useMemo(() => rows.some((row) => row.latencyMs !== null), [rows]);
+  const hasSessionIndex = useMemo(() => rows.some((row) => row.sessionIndex !== '-'), [rows]);
 
   const modelOptions = useMemo(
     () => [
@@ -273,7 +327,9 @@ export function RequestEventsDetailsCard({
       'model',
       'source',
       'source_raw',
+      'client_api_key',
       'auth_index',
+      ...(hasSessionIndex ? ['session_index'] : []),
       'result',
       ...(hasLatencyData ? ['latency_ms'] : []),
       'input_tokens',
@@ -289,7 +345,9 @@ export function RequestEventsDetailsCard({
         row.model,
         row.source,
         row.sourceRaw,
+        row.clientApiKey,
         row.authIndex,
+        ...(hasSessionIndex ? [row.sessionIndex] : []),
         row.failed ? 'failed' : 'success',
         ...(hasLatencyData ? [row.latencyMs ?? ''] : []),
         row.inputTokens,
@@ -318,7 +376,9 @@ export function RequestEventsDetailsCard({
       model: row.model,
       source: row.source,
       source_raw: row.sourceRaw,
+      client_api_key: row.clientApiKey,
       auth_index: row.authIndex,
+      ...(hasSessionIndex ? { session_index: row.sessionIndex } : {}),
       failed: row.failed,
       ...(hasLatencyData && row.latencyMs !== null ? { latency_ms: row.latencyMs } : {}),
       tokens: {
@@ -446,7 +506,9 @@ export function RequestEventsDetailsCard({
                   <th>{t('usage_stats.request_events_timestamp')}</th>
                   <th>{t('usage_stats.model_name')}</th>
                   <th>{t('usage_stats.request_events_source')}</th>
+                  <th>{t('usage_stats.request_events_client_api_key')}</th>
                   <th>{t('usage_stats.request_events_auth_index')}</th>
+                  {hasSessionIndex && <th>{t('usage_stats.request_events_session_index')}</th>}
                   <th>{t('usage_stats.request_events_result')}</th>
                   {hasLatencyData && <th title={latencyHint}>{t('usage_stats.time')}</th>}
                   <th>{t('usage_stats.input_tokens')}</th>
@@ -469,9 +531,11 @@ export function RequestEventsDetailsCard({
                         <span className={styles.credentialType}>{row.sourceType}</span>
                       )}
                     </td>
+                    <td title={row.clientApiKey}>{row.clientApiKey}</td>
                     <td className={styles.requestEventsAuthIndex} title={row.authIndex}>
                       {row.authIndex}
                     </td>
+                    {hasSessionIndex && <td title={row.sessionIndex}>{row.sessionIndex}</td>}
                     <td>
                       <span
                         className={

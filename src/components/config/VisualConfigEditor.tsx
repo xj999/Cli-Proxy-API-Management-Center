@@ -226,6 +226,10 @@ export function VisualConfigEditor({
     (apiKeysText: string) => onChange({ apiKeysText }),
     [onChange]
   );
+  const handleApiKeyAliasesTextChange = useCallback(
+    (apiKeyAliasesText: string) => onChange({ apiKeyAliasesText }),
+    [onChange]
+  );
   const handlePayloadDefaultRulesChange = useCallback(
     (payloadDefaultRules: PayloadRule[]) => onChange({ payloadDefaultRules }),
     [onChange]
@@ -749,8 +753,10 @@ export function VisualConfigEditor({
               <div className={styles.subsection}>
                 <ApiKeysCardEditor
                   value={values.apiKeysText}
+                  aliasValue={values.apiKeyAliasesText}
                   disabled={disabled}
                   onChange={handleApiKeysTextChange}
+                  onAliasChange={handleApiKeyAliasesTextChange}
                 />
               </div>
             </SectionStack>

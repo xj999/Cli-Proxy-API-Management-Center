@@ -6,6 +6,11 @@
 import type { GeminiKeyConfig, ProviderKeyConfig, OpenAIProviderConfig } from './provider';
 import type { AmpcodeConfig } from './ampcode';
 
+export interface ApiKeyAliasConfig {
+  apiKey: string;
+  alias: string;
+}
+
 export interface QuotaExceededConfig {
   switchProject?: boolean;
   switchPreviewModel?: boolean;
@@ -25,6 +30,7 @@ export interface Config {
   forceModelPrefix?: boolean;
   routingStrategy?: string;
   apiKeys?: string[];
+  apiKeyAliases?: ApiKeyAliasConfig[];
   ampcode?: AmpcodeConfig;
   geminiApiKeys?: GeminiKeyConfig[];
   codexApiKeys?: ProviderKeyConfig[];
@@ -48,6 +54,7 @@ export type RawConfigSection =
   | 'force-model-prefix'
   | 'routing/strategy'
   | 'api-keys'
+  | 'api-key-aliases'
   | 'ampcode'
   | 'gemini-api-key'
   | 'codex-api-key'
